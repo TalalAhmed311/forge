@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from forge.tools.base import ToolRegistry
-from forge.tools.fs import ListDirTool, ReadFileTool, WriteFileTool
+from forge.tools.fs import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from forge.tools.memory_tools import FetchRawContextTool, SearchContextTool
+from forge.tools.search import FindSymbolTool, GlobTool, GrepTool
 from forge.tools.shell import RunCommandTool
 
 
@@ -19,6 +20,25 @@ def engineer_tools() -> ToolRegistry:
             RunCommandTool(),
             SearchContextTool(),
             FetchRawContextTool(),
+        ]
+    )
+
+
+def agent_tools() -> ToolRegistry:
+    """Claude-Code-style toolset for the interactive agent: navigation + surgical
+    edits + write + shell + memory. (todo_write and spawn_subagent need injected
+    state and are added by the session.)"""
+
+    return ToolRegistry(
+        [
+            ReadFileTool(),
+            ListDirTool(),
+            GlobTool(),
+            GrepTool(),
+            FindSymbolTool(),
+            EditFileTool(),
+            WriteFileTool(),
+            RunCommandTool(),
         ]
     )
 

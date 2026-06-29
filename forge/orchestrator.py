@@ -97,6 +97,8 @@ class Orchestrator:
 
         # Two senior implementers: backend (default route) and frontend. The
         # architect tags each task's surface; the outer loop routes accordingly.
+        _max_seconds = config.loop.get("max_seconds", 0)
+        _no_progress = config.loop.get("no_progress_repeats", 3)
         self.backend_engineer = Engineer(
             provider=registry.for_role("engineer"),
             tools=engineer_tools(),
@@ -104,6 +106,8 @@ class Orchestrator:
             command_timeout_s=config.tools["command_timeout_s"],
             prompt_name="engineer",
             reporter=self.report,
+            max_seconds=_max_seconds,
+            no_progress_repeats=_no_progress,
         )
         self.frontend_engineer = Engineer(
             provider=registry.for_role("frontend_engineer"),
@@ -112,6 +116,8 @@ class Orchestrator:
             command_timeout_s=config.tools["command_timeout_s"],
             prompt_name="engineer_frontend",
             reporter=self.report,
+            max_seconds=_max_seconds,
+            no_progress_repeats=_no_progress,
         )
         # Back-compat alias: `engineer` is the backend/generalist engineer.
         self.engineer = self.backend_engineer

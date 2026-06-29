@@ -121,10 +121,14 @@ def cmd_reset(args) -> int:
     if not project.exists():
         print("nothing to reset — no .forge/ here")
         return 0
+    keep_memory = getattr(args, "keep_memory", False)
     if not args.yes and sys.stdin.isatty():
         print("This clears tracker, specs, logs, episodic memory, and learned "
               "lessons/skills in:")
         print(f"  {project.forge_dir}")
+        if not keep_memory:
+            print("It ALSO clears this project's cross-session memory (Postgres "
+                  "documents/sessions + Redis) so reset is a true fresh start.")
         print("config.yaml is kept. This cannot be undone.")
         if input("Proceed? [y/N]: ").strip().lower() not in ("y", "yes"):
             print("aborted")
@@ -133,7 +137,41 @@ def cmd_reset(args) -> int:
     print(f"reset {project.forge_dir} (kept config.yaml)")
     if removed:
         print(f"  cleared: {', '.join(removed)}")
+    if not keep_memory:
+        _clear_project_memory(
+            os.path.basename(project.root) or "project",
+            load_config(project.config_path), print)
     return 0
+
+
+def _clear_project_memory(project_name: str, config, report) -> None:
+    """Wipe a project's cross-session memory so a reset is a true fresh start:
+    the pgvector documents/sessions rows and the Redis episodic keys scoped to it.
+    Best-effort — if the backends aren't reachable, silently skip."""
+
+    mem = config.memory
+    try:
+        import psycopg  # type: ignore
+        with psycopg.connect(mem.get("pg_dsn", ""), connect_timeout=3) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM documents WHERE project=%s", (project_name,))
+                docs = cur.rowcount
+                cur.execute("DELETE FROM sessions WHERE project=%s", (project_name,))
+                sess = cur.rowcount
+            conn.commit()
+        if docs or sess:
+            report(f"  cleared memory: {docs} document(s), {sess} session row(s)")
+    except Exception:
+        pass
+    try:
+        import redis  # type: ignore
+        client = redis.Redis.from_url(mem.get("redis_url", ""))
+        keys = list(client.scan_iter(f"forge:{project_name}:*"))
+        if keys:
+            client.delete(*keys)
+            report(f"  cleared {len(keys)} Redis key(s)")
+    except Exception:
+        pass
 
 
 def cmd_setup(args) -> int:
@@ -344,6 +382,23 @@ def cmd_improve(args) -> int:
     return 0
 
 
+def cmd_agent(args) -> int:
+    """Interactive, Claude-Code-style coding agent in the terminal."""
+
+    from forge.agent.session import AgentSession
+
+    project = ForgeProject(root=os.path.abspath(args.dir))
+    config = load_config(project.config_path, overrides=_build_overrides(args))
+    registry = Registry(config)
+    session = AgentSession(
+        workspace=os.path.abspath(args.dir), config=config, registry=registry,
+        mode=getattr(args, "mode", "default"),
+        resume=getattr(args, "resume", False),
+        improve=getattr(args, "improve", False),
+    )
+    return session.repl(initial=getattr(args, "prompt", None))
+
+
 def cmd_config(args) -> int:
     project = ForgeProject(root=os.path.abspath(args.dir))
     config = load_config(project.config_path, overrides=_build_overrides(args))
@@ -420,6 +475,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("init", help="create .forge/").set_defaults(func=cmd_init)
     p_reset = sub.add_parser("reset", help="clear .forge/ state but keep config.yaml")
     p_reset.add_argument("--yes", "-y", action="store_true", help="skip confirmation")
+    p_reset.add_argument("--keep-memory", dest="keep_memory", action="store_true",
+                         help="keep cross-session memory (Postgres/Redis) on reset")
     p_reset.set_defaults(func=cmd_reset)
     p_setup = sub.add_parser("setup", help="interactively choose provider+model per role")
     p_setup.add_argument(
@@ -437,6 +494,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_sess.add_argument("prompt", nargs="?", default=None,
                         help="optional initial build request")
     p_sess.set_defaults(func=cmd_session)
+    p_agent = sub.add_parser(
+        "agent", help="interactive Claude-Code-style coding agent (edit/grep/glob, "
+                      "permissions, undo, todos, subagents)")
+    p_agent.add_argument("prompt", nargs="?", default=None,
+                         help="optional initial message")
+    p_agent.add_argument("--mode", default="default",
+                         choices=["default", "acceptEdits", "plan", "bypass"],
+                         help="permission mode (default asks before writes/commands)")
+    p_agent.add_argument("--resume", action="store_true",
+                         help="resume the previous conversation in this project")
+    p_agent.set_defaults(func=cmd_agent)
     sub.add_parser("resume", help="continue from NEXT task").set_defaults(func=cmd_resume)
     sub.add_parser("status", help="show tracker progress").set_defaults(func=cmd_status)
     p_ask = sub.add_parser("ask", help="ask a question about the project")

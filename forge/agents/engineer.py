@@ -58,11 +58,17 @@ class Engineer:
         prompt_name: str = "engineer",
         reporter=None,
         event_sink=None,
+        max_seconds: int = 0,
+        no_progress_repeats: int = 3,
     ) -> None:
         self.provider = provider
         self.tools = tools
         self.max_inner_iters = max_inner_iters
         self.command_timeout_s = command_timeout_s
+        # Guardrails (Section 6.2): bound wall-clock per task and escape early when
+        # the same verification failure repeats — so the loop can never flail.
+        self.max_seconds = max_seconds
+        self.no_progress_repeats = max(2, no_progress_repeats)
         # Cheap, continuous writes to short-term memory: (type, content, task_id,
         # meta). No-op by default; the orchestrator wires it to the episodic log.
         self.event_sink = event_sink or (lambda *a, **k: None)
@@ -102,14 +108,30 @@ class Engineer:
         gathered: GatheredContext,
         tool_ctx: ToolContext,
     ) -> TaskResult:
+        import time as _time
+
         history: list[Message] = [self._system(tool_ctx), self._task_message(task, gathered)]
         trace: list[str] = [f"TASK {task.id}: {task.title}"]
         tool_specs = self.tools.specs() + [ESCALATE_TOOL]
+        start = _time.monotonic()
+        last_fail_sig: Optional[str] = None
+        repeats = 0
 
         # -vv: dump the full task prompt/context sent to the engineer once.
         self.report(f"    ┌─ task context ─\n{history[1].content}\n    └─", level=3)
 
         for i in range(self.max_inner_iters):
+            # Guardrail #1: wall-clock budget — never flail past it.
+            if self.max_seconds and _time.monotonic() - start > self.max_seconds:
+                self.report(f"    ⏱ time budget ({self.max_seconds}s) reached — escalating")
+                return TaskResult(
+                    ok=False, escalate=True,
+                    reason="time budget exceeded",
+                    question=(f"Task {task.id} hit the {self.max_seconds}s time budget "
+                              f"without passing `{task.test_command}`. The plan or the "
+                              "test command may be wrong."),
+                    iterations=i, trace=trace,
+                )
             self.report(f"    · thinking (iteration {i + 1}/{self.max_inner_iters})…")
             completion = self.provider.complete(history, tools=tool_specs)
             trace.append(self._trace_completion(completion))
@@ -170,6 +192,23 @@ class Engineer:
             self.report("    ✗ tests failed — feeding the error back")
             # -v: the actual test output that failed.
             self.report(_indent(verdict.content, "      │ "), level=2)
+            # Guardrail #2: no-progress early-escape. If the SAME failure repeats
+            # with no change, the engineer is stuck (e.g. an unsatisfiable test
+            # command) — escalate fast instead of burning the whole iteration cap.
+            import hashlib as _hashlib
+            sig = _hashlib.md5(verdict.content[:500].encode("utf-8", "ignore")).hexdigest()
+            repeats = repeats + 1 if sig == last_fail_sig else 0
+            last_fail_sig = sig
+            if repeats + 1 >= self.no_progress_repeats:
+                self.report(f"    ↯ no progress ({repeats + 1}× same failure) — escalating")
+                return TaskResult(
+                    ok=False, escalate=True, reason="no progress",
+                    question=(f"Task {task.id}: the same test failure repeated "
+                              f"{repeats + 1}× with no progress on "
+                              f"`{task.test_command}`. The test command or the plan "
+                              f"may be wrong. Failure:\n{verdict.content[:300]}"),
+                    iterations=i + 1, trace=trace,
+                )
             # Failed: feed the ACTUAL error back and loop (Section 6.2).
             history.append(self._assistant_msg(completion))
             history.append(

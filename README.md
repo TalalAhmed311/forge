@@ -11,8 +11,8 @@ state file, `PROJECT_TRACKER.md`:
 - **Outer loop (plan/progress):** the architect agent turns a requirement into an
   ordered task list; the engineer clears it one task at a time.
 
-See [FORGE_SPEC.md](FORGE_SPEC.md) for the full design and
-[DECISIONS.md](DECISIONS.md) for implementation choices.
+There are **two front doors over one engine**: `forge run` (autonomous) and
+`forge agent` (interactive) — see [Two front doors, one brain](#two-front-doors-one-brain-run-vs-agent).
 
 ## Install
 
@@ -39,7 +39,7 @@ it's available whenever the venv is active:
 
 ```bash
 forge --help
-python -m pytest -q                # 89 tests should pass (needs the [dev] extra)
+python -m pytest -q                # 126 tests should pass (needs the [dev] extra)
 ```
 
 Run `deactivate` to leave the venv; re-activate with `source .venv/bin/activate`
@@ -61,12 +61,19 @@ forge run "..." -vv                 # very verbose: + plans, specs, and the full
 forge run "..." --quiet             # silent: print only the final result
 forge status                        # tasks + progress
 forge resume                        # continue from NEXT after an interruption
-forge reset                         # clear .forge/ state but KEEP config.yaml (fresh start)
+forge reset                         # fresh start: clear .forge/ AND this project's memory (keeps config.yaml)
+forge reset --keep-memory           # …but keep cross-session memory (Postgres/Redis)
 forge ask "where is config loaded?"  # answered from context, no code changes
 forge config                        # show resolved provider/model per role
 forge improve                       # reflect, gate + promote staged skills (Phase 7)
 forge improve --status              # show learned lessons + skill library
 forge improve --rollback <skill>    # one-step undo of a promoted skill
+
+forge agent                         # interactive coding agent (see below)
+forge agent "fix the failing test"  # start with an initial request
+forge agent --mode plan             # read-only: explore/understand, no edits
+forge agent --mode acceptEdits      # auto-apply edits (you can still /undo)
+forge agent --resume                # continue the previous conversation
 ```
 
 Try it offline with the deterministic mock provider:
@@ -74,6 +81,61 @@ Try it offline with the deterministic mock provider:
 ```bash
 forge --mock run "build a thing"
 ```
+
+## Two front doors, one brain (`run` vs `agent`)
+
+Forge exposes the **same** engine — architect, `PROJECT_TRACKER.md`, the
+build/verify engineer, cross-session memory, clarifier, improve — through two
+front doors that share all of it (the same `.forge/` state):
+
+- **`forge run` — autonomous.** Fire-and-forget: the architect plans, the
+  engineer clears the task list, the test gate decides "done." Best when you can
+  state a goal and walk away.
+- **`forge agent` — interactive.** A conversational, model-driven coding agent in
+  your terminal (Claude-Code-style): you steer turn by turn while it reads, edits,
+  runs commands, and verifies. Best for *understanding a repo and fixing it*.
+
+The agent is **not** a separate brain — it *drives* the same subsystems:
+
+| You ask… | The agent engages | `.forge/` it writes |
+|---|---|---|
+| a question | navigation tools + **memory recall** (router) | session log |
+| a small fix | edits + `run_command` + **test gate** + **improve** | session, memory cards |
+| a build | **clarifier** → **architect** (`plan`) → tasks → **engineer** (`delegate`) | specs + `PROJECT_TRACKER.md` |
+
+### `forge agent` — what it can do
+- **Navigate**: `read_file`, `list_dir`, `glob`, `grep`, `find_symbol`
+  (go-to-definition / find-references via the repo symbol index).
+- **Edit precisely**: `edit_file` (surgical `old→new`), `write_file`.
+- **Run & verify**: `run_command` (sees exit code + stdout + stderr).
+- **Plan & delegate**: `plan` invokes the architect (writes specs +
+  `PROJECT_TRACKER.md`); `delegate_task` hands a task to the test-gated engineer.
+- **Remember**: registers a session (`sessions.json` + the Postgres `sessions`
+  table), injects a cross-session **router** briefing each turn, writes episodic
+  events, and promotes a memory card on exit; `search_memory` is a tool.
+- **Stay safe**: permission **modes** — `default` (ask before writes/commands),
+  `acceptEdits`, `plan` (read-only), `bypass` (full control) — plus an undo
+  **checkpoint** (`/undo`) and per-turn diffs.
+- **Persist**: the conversation is saved to `.forge/agent/session.json`; resume
+  with `forge agent --resume`.
+
+Permission modes and slash commands:
+
+```bash
+forge agent --mode plan      "explain how auth works and where the rate limiter lives"
+forge agent --mode acceptEdits "fix the failing login test"
+```
+
+```
+/help  /mode <m>  /plan <text>  /delegate <text>  /status  /sync  /memory <q>
+/diff  /undo  /todos  /tools  /init  /commit [msg]  /clear  /quit
+```
+`@path` in a message inlines that file; Ctrl-C interrupts a turn. `/sync` runs
+each pending tracker task's test and checks off the ones that pass — handy after
+building by chatting (which doesn't touch the tracker on its own).
+
+Run `forge --improve agent` to enable reflection (lessons/skills) after delegated
+tasks; promote staged skills afterwards with `forge improve`.
 
 ## First-time setup (interactive)
 
@@ -115,6 +177,9 @@ memory:
   engine: simple        # or "episodic" for the Phase 6 retrieval engine
 improve:
   enabled: false        # Phase 7 self-improvement; off => exact Phase 1-6 behavior
+loop:
+  max_seconds: 240         # per-task wall-clock budget so a task can never flail (0 disables)
+  no_progress_repeats: 3   # identical test failures in a row => escalate early
 ```
 
 Per-role overrides are available for quick experiments without editing the file:
@@ -231,33 +296,49 @@ reusable procedure). Skills are promoted to callable tools **only** after passin
 a frozen regression suite in `.forge/eval/` — and the engineer is structurally
 **denied write access** to that suite and to `tests/`, so it can never make tests
 pass by weakening them. Everything is append-only and reversible (`--rollback`).
-See [FORGE_PHASE7_SELF_IMPROVEMENT.md](FORGE_PHASE7_SELF_IMPROVEMENT.md).
 
 ## Architecture
 
 ```
-orchestrator (two loops)
+front doors
+├── orchestrator (run)   autonomous: two loops, test-gated, fire-and-forget
+└── agent (forge agent)  interactive: model-driven REPL, human-in-the-loop
+        │  (both share the SAME subsystems + .forge/ state below)
+        ▼
+shared engine
 ├── clarity check     clarifier: resolve-from-context-then-ask     (Section 10)
 ├── architect    →    specs + ordered, FE/BE-tagged tasks          (Section 7)
 ├── engineers    →    Senior Software (BE) + Senior UI/UX (FE),
 │                     build/verify inner loop, gated by tests      (Section 6)
 ├── providers/        one interface; openai/anthropic/ollama/
 │                     deepseek + mock; per-role routing            (Section 5)
-├── memory/           tier-1 tracker (verbatim) + tier-2 episodic  (Sections 7, 8)
-├── tools/            read / write / list / run / search / fetch    (Section 12)
+├── memory/           tier-1 tracker (verbatim) + tier-2 episodic
+│                     + cross-session router recall + sessions     (Sections 7, 8)
+├── tools/            read / write / edit / list / run / grep / glob /
+│                     find_symbol / search / plan / delegate        (Section 12)
+├── agent/            loop · permissions · checkpoints/undo · REPL  (interactive)
 ├── grounding         evidence-cited claims + verification backstop (Section 11)
 └── improve/          lessons + verified skills + eval isolation    (Phase 7)
 ```
 
+The interactive **`agent/`** layer (loop, permission modes, undo checkpoints,
+context compaction, slash commands) sits *on top of* the shared engine: when it
+needs to plan it calls the **architect**, when it needs autonomous execution it
+calls the **engineer**, and it reads/writes the same memory, tracker, and
+sessions as `forge run`. One brain, two front doors.
+
 ## Tests
 
 ```bash
-python3 -m pytest -q            # 89 tests
+python3 -m pytest -q            # 126 tests
 ```
 
 The suite mirrors the spec's phase exit tests and the later additions: provider
 tool-call normalization, the engineer driving a planted failing test to green,
 clarity resolution, a 3-task tracker cleared end-to-end with `resume`, Phase 6
 cross-session recall + buried-detail recovery, Phase 7 self-improvement (eval
-isolation, lessons, gated skill promotion), FE/BE task routing, and the
-interactive setup wizard.
+isolation, lessons, gated skill promotion), FE/BE task routing, the interactive
+setup wizard, and the **interactive agent** (edit/grep/glob/find_symbol tools,
+permission modes, undo checkpoints, the model-driven loop with compaction,
+session persistence/resume, and the agent driving the architect `plan` and the
+test-gated engineer `delegate`).

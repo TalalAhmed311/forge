@@ -34,6 +34,7 @@ class ToolContext:
     recall: object = None  # forge.memory.recall.CrossSessionRecall (optional)
     project_name: str = ""
     session_id: str = ""
+    checkpoint: object = None  # forge.agent.checkpoint.CheckpointManager (optional)
 
 
 @dataclass

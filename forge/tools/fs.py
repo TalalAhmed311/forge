@@ -81,8 +81,8 @@ class WriteFileTool(Tool):
     }
 
     def run(self, args: dict, ctx: ToolContext) -> ToolResult:
-        # Only the engineer may write (Section 12).
-        if ctx.role != "engineer":
+        # Only the engineer / interactive agent may write (Section 12).
+        if ctx.role not in ("engineer", "agent"):
             return ToolResult(
                 ok=False, content=f"role '{ctx.role}' is not permitted to write files"
             )
@@ -100,6 +100,10 @@ class WriteFileTool(Tool):
                     "modify the tests."
                 ),
             )
+        # Snapshot for undo BEFORE mutating (best-effort; no-op if unset).
+        cp = getattr(ctx, "checkpoint", None)
+        if cp is not None:
+            cp.snapshot(path)
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(args["content"])
@@ -128,3 +132,69 @@ class ListDirTool(Tool):
             full = os.path.join(path, e)
             lines.append(f"{e}/" if os.path.isdir(full) else e)
         return ToolResult(ok=True, content="\n".join(lines) or "(empty)")
+
+
+class EditFileTool(Tool):
+    """Surgical edit: replace an exact `old_string` with `new_string`.
+
+    This is the precise alternative to `write_file` (which rewrites the whole
+    file and is the main cause of large-file drift). `old_string` must match
+    exactly and, unless `replace_all` is set, must be unique in the file.
+    """
+
+    name = "edit_file"
+    description = (
+        "Replace an exact substring in an existing file. `old_string` must appear "
+        "verbatim and be unique (include surrounding context to disambiguate) "
+        "unless replace_all=true. Prefer this over write_file for changes to "
+        "existing files."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "workspace-relative path"},
+            "old_string": {"type": "string", "description": "exact text to replace"},
+            "new_string": {"type": "string", "description": "replacement text"},
+            "replace_all": {"type": "boolean", "description": "replace every occurrence"},
+        },
+        "required": ["path", "old_string", "new_string"],
+    }
+
+    def run(self, args: dict, ctx: ToolContext) -> ToolResult:
+        if ctx.role not in ("engineer", "agent"):
+            return ToolResult(ok=False, content=f"role '{ctx.role}' may not edit files")
+        path = _resolve(ctx.workspace, args["path"])
+        protected = protected_root_for(ctx.workspace, path, ctx.config)
+        if protected:
+            return ToolResult(
+                ok=False,
+                content=(f"refused: '{args['path']}' is under protected path "
+                         f"'{protected}'. Fix the implementation, not the tests."),
+            )
+        if not os.path.isfile(path):
+            return ToolResult(ok=False, content=f"no such file: {args['path']} "
+                              "(use write_file to create it)")
+        old = args["old_string"]
+        new = args["new_string"]
+        if old == new:
+            return ToolResult(ok=False, content="old_string and new_string are identical")
+        with open(path, "r", encoding="utf-8") as fh:
+            content = fh.read()
+        count = content.count(old)
+        if count == 0:
+            return ToolResult(ok=False, content="old_string not found in file (it must "
+                              "match exactly, including whitespace)")
+        if count > 1 and not args.get("replace_all"):
+            return ToolResult(ok=False, content=f"old_string is not unique ({count} "
+                              "matches); add surrounding context or set replace_all=true")
+        # Snapshot for undo BEFORE mutating (best-effort; no-op if unset).
+        cp = getattr(ctx, "checkpoint", None)
+        if cp is not None:
+            cp.snapshot(path)
+        updated = content.replace(old, new) if args.get("replace_all") else content.replace(old, new, 1)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(updated)
+        rel = os.path.relpath(path, os.path.realpath(ctx.workspace))
+        n = count if args.get("replace_all") else 1
+        return ToolResult(ok=True, content=f"edited {rel} ({n} replacement(s))",
+                          meta={"path": path, "replacements": n})

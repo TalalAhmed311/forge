@@ -29,6 +29,11 @@ DEFAULT_CONFIG: dict = {
     "loop": {
         "max_inner_iters": 15,
         "max_outer_tasks": 100,
+        # Guardrails so a task can never flail indefinitely (the #1 cause of
+        # "stuck"): a per-task wall-clock budget, and an early-escape when the
+        # same verification failure repeats with no progress.
+        "max_seconds": 240,          # 0 disables the time budget
+        "no_progress_repeats": 3,    # identical test failures in a row -> escalate
     },
     "memory": {
         # "simple" = tier-1 + recent raw (default; useful product after Phase 5).
