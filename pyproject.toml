@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forge-agent"
+version = "0.1.0"
+description = "Forge — a model-agnostic CLI coding agent built on loop engineering"
+readme = "README.md"
+requires-python = ">=3.9"
+# Runtime deps are intentionally tiny — Forge talks to every model provider over
+# plain HTTP (urllib), so no provider SDKs are needed.
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+# Persistent memory backends: Redis (short-term) + Postgres/pgvector (long-term).
+# Run the servers with `docker compose up -d`, then `pip install -e ".[memory]"`.
+memory = [
+    "redis>=5.0",
+    "psycopg[binary]>=3.1",
+    "pgvector>=0.2.5",
+]
+
+# This is what makes `forge` a real command after `pip install` — portable, no
+# hardcoded paths, works in whatever environment the user installs into.
+[project.scripts]
+forge = "forge.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["forge*"]
+
+[tool.setuptools.package-data]
+forge = ["agents/prompts/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

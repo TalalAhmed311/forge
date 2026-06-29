@@ -1,0 +1,16 @@
+# Secrets — never commit. Keep the .env.example template tracked.
+.env
+.env.local
+
+# Per-project runtime state lives in the TARGET repo's .forge/, but ignore any
+# that lands here (e.g. when dogfooding Forge on itself).
+.forge/
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/
+venv/
