@@ -1,5 +1,3 @@
-"""Standard tool sets per role (Section 6.3)."""
-
 from __future__ import annotations
 
 from forge.tools.base import ToolRegistry

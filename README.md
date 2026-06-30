@@ -1,4 +1,28 @@
-# Forge — CLI Coding Agent
+<div align="center">
+
+```
+ ███████╗ ██████╗ ██████╗  ██████╗ ███████╗
+ ██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝
+ █████╗  ██║   ██║██████╔╝██║  ███╗█████╗
+ ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝
+ ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗
+ ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝
+```
+
+# 🔨 Forge — CLI Coding Agent
+
+**🔁 Loop-engineered · 🧠 memory-aware · 🤖 model-agnostic**
+
+_It doesn't answer once — it acts, runs the tests, and forges code until they pass._
+
+![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+![Providers](https://img.shields.io/badge/models-Anthropic%20·%20OpenAI%20·%20DeepSeek%20·%20Ollama-8A2BE2)
+![Memory](https://img.shields.io/badge/memory-Redis%20%2B%20pgvector-success)
+![Tests](https://img.shields.io/badge/tests-126%20passing-brightgreen)
+
+</div>
+
+---
 
 Forge is a model-agnostic command-line coding agent built on **loop engineering**:
 it doesn't answer once, it acts, observes the result, and repeats until a
